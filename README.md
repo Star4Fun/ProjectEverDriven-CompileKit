@@ -31,7 +31,7 @@ So in the Tool TextField can you select a name. File Path is just the path to th
 
 
 
-<h1>Usage</h1>
+<h2>Usage</h2>
 You can launch the program with different parameters. I've added the ability to add a config file because the commandline for external tools in HSP Script Editor isn't very long. You use the same switches like the command line except the sign. For example:
 
 ```
