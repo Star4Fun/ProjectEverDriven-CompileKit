@@ -1,0 +1,383 @@
+/*----------------------------------------------------------------------------
+	lhspicc.exe
+	for Windows NT
+
+	by Kpan
+	Let's HSP!
+	http://lhsp.s206.xrea.com/
+	
+	Improved based on lhspicc.exe v0.2
+	Made 2012.04.08 Ver 1.00 by inovia https://twitter.com/#!/hinekure_inovia
+	Correction 2012.06.21 Ver 1.01 by inovia https://twitter.com/#!/hinekure_inovia
+	Added manifest editing function 2013.09.15 by Tetr@pod
+	DPMX data loading process changed & organized 2017.11.05 by K-s https://twitter.com/skymonsters_Ks
+	Save error log 2020.04.06 by K-s
+----------------------------------------------------------------------------*/
+#define VERSION "v1.02+++"
+
+#runtime "hsp3cl"
+#packopt name "iconins"
+#cmpopt optcode 1
+
+#include "kernel32.as"
+#include "modResource.hsp"
+#include "modBsearch.hsp"
+; #include "modEXECheck.hsp"
+#include "modUPX.hsp"
+#include "modCmdSplit.hsp"
+
+#define RT_ICON 3
+#define RT_GROUP_ICON 14
+#define RT_MANIFEST 24
+
+#define DISP_ERR(%1) errorno=%1 : goto *error
+
+/*----------------------------------------------------------------------------
+	   C  
+----------------------------------------------------------------------------*/
+	mes "iconins.exe " + VERSION
+	mes "Basic program has been created by Kpan."
+	mes "Modified by inovia, Tetr@pod, K-s"
+	mes
+
+	path_command = dir_cmdline
+	
+	if path_command = "" {
+		mes "Usage:"
+		mes "iconins -e\"Executable file path' option"
+		mes
+		mes "Options (multiple options allowed):"
+		mes "-i\"icon file path\""
+		mes "-v\"version file path\""
+		mes "-l\"language ID\""
+		mes "-u\"Use UPX compression flag\""
+		mes "-m\"manifest file path\"\n"
+		stop
+	}
+
+	sdim path_exe
+	sdim path_icon
+	sdim path_ver
+	sdim path_manifest
+	langID = 0x0411	// Default is Japan
+	use_upx = 0		// Use UPX Compression?
+	mask = 0
+
+	;	Get command line parameters
+	len = strlen(path_command)
+	pt = 0
+	if 0 {
+		#defcfunc setMask int _m, local _ts
+			mask |= _m
+			getstr _ts, path_command, pt + 3, '\"'
+			pt += strsize + 3
+		return _ts
+	}
+	while pt < len
+		if peek(path_command, pt) = '-' {
+			switch peek(path_command, pt + 1)
+			case 'e'
+				path_exe = setMask(1)
+				_continue
+			case 'i'
+				path_icon = setMask(2)
+				_continue
+			case 'v'
+				path_ver = setMask(4)
+				_continue
+			case 'l'
+				langID = int(setMask(8))
+				_continue
+			case 'u'
+				use_upx = int(setMask(16))
+				_continue
+			case 'm'
+				path_manifest = setMask(32)
+				_continue
+			swend
+		}
+		pt++
+	wend
+
+	if varptr(BeginUpdateResource) = 0 | varptr(UpdateResource) = 0 | varptr(EndUpdateResource) = 0 {
+		DISP_ERR 1	// [Not available for Windows 9x OS]
+	}
+
+	;	check the path
+	if 0 {
+		#deffunc chkPath str _p, int _e
+			exist _p : if strsize = -1 : DISP_ERR _e
+		return
+	}
+	chkPath path_exe, 10
+	chdir getpath(path_exe, 32) // move current directory
+	if mask & 2 : chkPath path_icon, 41
+	if mask & 4 : chkPath path_ver, 42
+	if mask & 32 : chkPath path_manifest, 43
+	
+	bsearch_init	// Binary search initialization (requires last free)
+
+/*----------------------------------------------------------------------------
+	DPMX data loading process
+----------------------------------------------------------------------------*/
+	;	Loading the executable
+	notesel buf_exe
+	noteload path_exe
+	size_exe = strsize
+	
+	;	Quick check of executable file and find DPMX location
+	if 0 {
+		#defcfunc readBuf_w int _i
+			if (_i <= size_exe - 2) : return wpeek(buf_exe, _i) : else : goto *@f
+		#defcfunc readBuf_l int _i
+			if (_i <= size_exe - 4) : return lpeek(buf_exe, _i) : else : goto *@f
+		*@
+		DISP_ERR 12  // [Failed to load executable file]
+	}
+	if readBuf_w() != $5a4d /*MZ*/ : goto *@b
+	ad_pe = readBuf_l($3c) ; PE address
+	if readBuf_w(ad_pe) != $4550 /*PE*/ : goto *@b
+	num_sec = readBuf_w(ad_pe + 6) ; NumberOfSections
+	size_oh = readBuf_w(ad_pe + 20) ; SizeOfOptionalHeader
+	ad_sh = ad_pe + size_oh + 24 + 40 * (num_sec - 1) ; address of last section header
+	size_rd = readBuf_l(ad_sh + 16) ; SizeOfRawData
+	pt_rd = readBuf_l(ad_sh + 20) ; PointerToRawData
+	pos_dpmx = size_rd + pt_rd
+	if readBuf_l(pos_dpmx) != $584d5044 /*DPMX*/ : DISP_ERR 20  // ['DPMX' string not found]
+
+	;	DPMX data read
+	size_dpmx = size_exe - pos_dpmx
+	sdim buf_dpmx, size_dpmx
+	memcpy buf_dpmx, buf_exe, size_dpmx, , pos_dpmx
+
+/*----------------------------------------------------------------------------
+	Icon change processing
+----------------------------------------------------------------------------*/
+	if mask & 2 {
+		;	Loading icon files
+		notesel buf_icon
+		noteload path_icon
+	
+		;	Simple check of icon files
+		if lpeek(buf_icon) != $10000 {
+			DISP_ERR 21	// [invalid icon file]
+		}
+
+		;	Get number of icons in icon file
+		count_icon = wpeek(buf_icon, $4)
+	
+		;	Generate group icon data
+		sdim buf_groupicon, count_icon * $E + $6
+		memcpy buf_groupicon, buf_icon, $6
+		repeat count_icon
+			memcpy buf_groupicon, buf_icon, $C, $E * cnt + $6, $10 * cnt + $6
+			wpoke buf_groupicon, $E * (cnt + 1) + $4, cnt + 1
+		loop
+	
+		;	Declaring the beginning of a resource change
+		BeginUpdateResource path_exe, 0
+		if stat = 0 {
+			DISP_ERR 22	// [Failed to initiate resource modification]
+		}
+		hResource = stat
+	
+		;	Reflecting group icon data
+		UpdateResource hResource, RT_GROUP_ICON, 128, 1033, varptr(buf_groupicon), $E * count_icon + $6
+	
+		;	Generation and reflection of individual icon data
+		repeat count_icon
+			size_resicon = lpeek(buf_icon, $10 * cnt + $E)
+	
+			sdim buf_resicon, size_resicon
+			memcpy buf_resicon, buf_icon, size_resicon, , lpeek(buf_icon, $10 * cnt + $12)
+			UpdateResource hResource, RT_ICON, cnt + 1, 1033, varptr(buf_resicon), size_resicon
+		loop
+	
+		;	Declare end of resource change
+		EndUpdateResource hResource, 0
+	
+	}
+	
+/*----------------------------------------------------------------------------
+	Version setting change process
+----------------------------------------------------------------------------*/
+	if mask & 4 {
+		// Read version setting file
+		notesel ver_buf
+		noteload path_ver
+		// Separate parameters
+		cmdSplit ver_buf, fver, pver, name, val
+		
+		newmod vib, VersionInfoBuilder, langID	// Japan // 0x409 for USA
+		notesel name
+		repeat notemax
+			notesel name
+			noteget tmp, cnt
+			notesel val
+			noteget tmp2, cnt
+			setPropVal vib, tmp, tmp2
+		loop
+	
+		// Setting the version
+		setFileVersion vib, fver(0), fver(1), fver(2), fver(3)
+		setProdVersion vib, pver(0), pver(1), pver(2), pver(3)
+	
+		// write to executable
+		updateExeFile vib, path_exe
+		if stat == -1 {
+			DISP_ERR 22	// [Failed to initiate resource modification]
+		}
+	
+		delmod vib
+	}
+	
+/*----------------------------------------------------------------------------
+	manifest edited by Tetr@pod
+----------------------------------------------------------------------------*/
+	if mask & 32 {	
+		;	Loading the manifest file
+		notesel buf_manifest
+		noteload path_manifest
+		
+		;	Declaring the beginning of a resource change
+		BeginUpdateResource path_exe, 0// TRUE to delete existing resource
+		if stat = 0 {
+			DISP_ERR 22	// [Failed to initiate resource modification]
+		}
+		hResource = stat
+	
+		;	reflect the manifest
+		UpdateResource hResource, RT_MANIFEST, 1, 1033, varptr(buf_manifest), strlen(buf_manifest)// It's fixed to 24/1/1033, but is it better to list it with an Enum?
+	
+		;	Declare end of resource change
+		EndUpdateResource hResource, 0
+	
+	}
+	
+/*----------------------------------------------------------------------------
+	UPX compression processing
+----------------------------------------------------------------------------*/
+	if use_upx == 1{
+		// UPX path, rewriting executable file, command, window display, DPMX modification
+		CompressUPX "", path_exe, "--compress-icons=0", 1, pos_dpmx
+		pos_dpmx = stat
+		switch stat
+			case -1 : DISP_ERR 31
+			case -2 : DISP_ERR 32
+			case -3 : DISP_ERR 33
+			case -4 : DISP_ERR 34
+			case -5 : DISP_ERR 35
+		swend
+	}
+	
+/*----------------------------------------------------------------------------
+	Post-change processing
+----------------------------------------------------------------------------*/
+	;	Get size of new executable
+	exist path_exe
+	if strsize = -1 {
+		DISP_ERR 24	// [Rewritten executable not found]
+	}
+	size_exenew = strsize
+
+	;	Load new executable
+	sdim buf_exenew, size_exenew + size_dpmx
+	bload path_exe, buf_exenew
+	
+	if use_upx == 0{
+		;	Find index offset
+		point_exenew = varptr(buf_exenew)
+		keyword = str(pos_dpmx - $10000)
+		if bsearch(0, point_exenew, size_exenew, keyword, strlen(keyword)) = -1 {
+			DISP_ERR 23	// [index offset not found]
+		}
+	
+		;	Correcting the index offset
+		poke buf_exenew, stat, ""+(size_exenew - $10000)
+	}
+
+	;	Reflection of DPMX data
+	memcpy buf_exenew, buf_dpmx, size_dpmx, size_exenew
+	bsave path_exe, buf_exenew
+
+/*----------------------------------------------------------------------------
+	End processing
+----------------------------------------------------------------------------*/
+	mes "Work has ended."
+*terminate
+	// release
+	if pbm@m != 0 : VirtualFree pbm@m, 49*4, 0x8000/*MEM_RELEASE*/  : pbm@m = 0
+	
+end
+
+/*----------------------------------------------------------------------------
+	error
+----------------------------------------------------------------------------*/
+*error
+	switch errorno
+		case 1
+			m = "Not available on Windows 9x OS"
+			swbreak
+		case 10
+			m = "Executable not found"
+			swbreak
+		case 12
+			m = "Failed to load executable"
+			swbreak
+		case 13
+			m = "Not an HSP executable file"
+			swbreak
+		case 20
+			m = "'DPMX' string not found"
+			swbreak
+		case 21
+			m = "Bad icon file"
+			swbreak
+		case 22
+			m = "Failed to initiate resource modification"
+			swbreak
+		case 23
+			m = "index offset not found"
+			swbreak
+		case 24
+			m = "no rewritten executable found"
+			swbreak
+		case 31
+			m = "Executable not found"
+			swbreak
+		case 32
+			m = "Failed to lookup in binary for header identifier 'DPMX'"
+			swbreak
+		case 33
+			m = "Failed to verify offset"
+			swbreak
+		case 34
+			m = "Failed to search in binary for file size check correction"
+			swbreak
+		case 35
+			m = "UPX.exe not found"
+			swbreak
+		case 41
+			m = "icon file not found"
+			swbreak
+		case 42
+			m = "version file not found"
+			swbreak
+		case 43
+			m = "manifest file not found"
+			swbreak
+		default  
+			swbreak
+	swend
+
+	log = strf("[ERROR] No.%02d: %s\n %s", errorno, m, path_command)
+	mes log
+	lf = dir_exe + "\\iconins_err.log"
+	bsave lf, log, strlen(log)
+	mes lf + " saved the error log"
+
+	mes "press enter"
+	s = ""
+	input s, 64, 1
+
+	goto *terminate
