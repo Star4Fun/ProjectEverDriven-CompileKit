@@ -1,0 +1,11 @@
+_FILEVERSION=0.8
+	_PRODUCTVERSION=0.8
+;Comments = test
+	CompanyName=OmegaDelta!
+;FileDescription = test
+	FileVersion=0.8
+	;InternalName=test
+	;LegalCopyright=Copyright (C) 2017 Test!
+	;OriginalFilename=test.exe
+;ProductName = test
+	ProductVersion=0.8
